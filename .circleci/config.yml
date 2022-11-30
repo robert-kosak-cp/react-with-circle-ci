@@ -11,28 +11,9 @@ executors:
     resource_class: large
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Contexts ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
-
 docker_node: &docker_node
   docker:
-    - image: cimg/node:16.14.2
-
-docker_base: &docker_base
-  docker:
-    - image: cimg/base:stable
-
-orbs:
-  cypress: cypress-io/cypress@2.2.0
-
-context: &context
-  context:
-    - org-global
-
-develop_branch: &develop_branch
-  filters:
-    branches:
-      only:
-        - develop
-        - circleci-project-setup
+    - image: cimg/node:16.18.0
 
 staging_branch: &staging_branch
   filters:
@@ -40,46 +21,15 @@ staging_branch: &staging_branch
       only:
         - staging
 
-master_branch: &master_branch
-  filters:
-    branches:
-      only:
-        - master
-
-
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Jobs ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
 
 jobs:
-  cy-e2e-chrome-desktop:
-      name: "UI Tests - Chrome"
-      browser: chrome
-      executor: with-chrome-and-firefox
-      wait-on: "http://localhost:3000"
-      yarn: true
-      ci-build-id: ${CIRCLE_SHA1:0:8}
-      record: true
-      parallel: true
-      parallelism: 4
-      start: yarn start
-      group: "UI - Chrome"
-  set_version_number:
-    <<: *docker_node
-    steps:
-      - checkout
-
   compile_app:
     resource_class: large
-    parameters:
-      rc_build:
-        type: boolean
-        default: false
     <<: *docker_node
-    description: >
-      Create a development build
+    description: Create a development build
     steps:
       - checkout
-      - restore_cache:
-          key: v1-dep-{{ checksum "yarn.lock" }}
       - run:
           name: 'Yarn install'
           command: 'yarn install'
@@ -91,27 +41,35 @@ jobs:
           name: 'Run yarn build'
           command: 'yarn build'
       - run:
-          name: 'Prepare docker build'
-          command: 'cp docker/* target/'
-      - setup_remote_docker:
-          version: 20.10.14
-      - run:
-          name: 'Make docker build'
-          command: |
-            docker build \
-              --build-arg VERSION=${BUILD_VERSION} \
-              -t ${AWS_ECR_REGISTRY_ID}.dkr.ecr.eu-west-1.amazonaws.com/club-frontend:${BUILD_VERSION} \
-              target
- 
+          name: 'Serve'
+          command: 'yarn global add serve'
+
+orbs:
+  cypress: cypress-io/cypress@2.2.0
 workflows:
-  ci:
+  build_and_test:
     jobs:
-      - set_version_number
-      - compile_app:
-          name: compile_dev
-          <<: *develop_branch
-          <<: *context
-          rc_build: false
+      - compile_app
+      - cypress/run:
+          name: "e2e_chrome_desktop"
+          browser: chrome
+          group: "E2E - Chrome"
+          executor: with-chrome-and-firefox
           requires:
-            - set_version_number
-      - cy-e2e-chrome-desktop
+            - compile_app
+          parallelism: 5
+          start: yarn start
+          wait-on: 'http://localhost:3000'
+          post-steps:
+            - run: npx cypress run --record --key ${CY_CLOUD_RECORD_KEY}
+      - cypress/run:
+          name: "E2E Firefox desktop"
+          browser: firefox
+          group: "E2E - Firefox"
+          executor: with-chrome-and-firefox
+          requires:
+            - compile_app
+            - e2e_chrome_desktop
+          parallelism: 4
+          start: yarn start
+          wait-on: 'http://localhost:3000'
