@@ -2,25 +2,116 @@
 # See: https://circleci.com/docs/2.0/configuration-reference
 version: 2.1
 
-# Define a job to be invoked later in a workflow.
-# See: https://circleci.com/docs/2.0/configuration-reference/#jobs
-jobs:
-  say-hello:
-    # Specify the execution environment. You can specify an image from Dockerhub or use one of our Convenience Images from CircleCI's Developer Hub.
-    # See: https://circleci.com/docs/2.0/configuration-reference/#docker-machine-macos-windows-executor
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Executors ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
+
+executors:
+  with-chrome-and-firefox:
     docker:
-      - image: cimg/base:stable
-    # Add steps to the job
-    # See: https://circleci.com/docs/2.0/configuration-reference/#steps
+      - image: "cypress/browsers:node16.14.2-slim-chrome100-ff99-edge"
+    resource_class: large
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Contexts ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
+
+docker_node: &docker_node
+  docker:
+    - image: cimg/node:16.14.2
+
+docker_base: &docker_base
+  docker:
+    - image: cimg/base:stable
+
+orbs:
+  cypress: cypress-io/cypress@2.2.0
+
+context: &context
+  context:
+    - org-global
+
+develop_branch: &develop_branch
+  filters:
+    branches:
+      only:
+        - develop
+        - circleci-project-setup
+
+staging_branch: &staging_branch
+  filters:
+    branches:
+      only:
+        - staging
+
+master_branch: &master_branch
+  filters:
+    branches:
+      only:
+        - master
+
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Jobs ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
+
+jobs:
+  cy-e2e-chrome-desktop:
+      name: "UI Tests - Chrome"
+      browser: chrome
+      executor: with-chrome-and-firefox
+      wait-on: "http://localhost:3000"
+      yarn: true
+      ci-build-id: ${CIRCLE_SHA1:0:8}
+      record: true
+      parallel: true
+      parallelism: 4
+      start: yarn start
+      group: "UI - Chrome"
+  set_version_number:
+    <<: *docker_node
     steps:
       - checkout
-      - run:
-          name: "Say hello"
-          command: "echo Hello, World!"
 
-# Invoke jobs via workflows
-# See: https://circleci.com/docs/2.0/configuration-reference/#workflows
+  compile_app:
+    resource_class: large
+    parameters:
+      rc_build:
+        type: boolean
+        default: false
+    <<: *docker_node
+    description: >
+      Create a development build
+    steps:
+      - checkout
+      - restore_cache:
+          key: v1-dep-{{ checksum "yarn.lock" }}
+      - run:
+          name: 'Yarn install'
+          command: 'yarn install'
+      - save_cache:
+          key: v1-dep-{{ checksum "yarn.lock" }}
+          paths:
+            - node_modules
+      - run:
+          name: 'Run yarn build'
+          command: 'yarn build'
+      - run:
+          name: 'Prepare docker build'
+          command: 'cp docker/* target/'
+      - setup_remote_docker:
+          version: 20.10.14
+      - run:
+          name: 'Make docker build'
+          command: |
+            docker build \
+              --build-arg VERSION=${BUILD_VERSION} \
+              -t ${AWS_ECR_REGISTRY_ID}.dkr.ecr.eu-west-1.amazonaws.com/club-frontend:${BUILD_VERSION} \
+              target
+ 
 workflows:
-  say-hello-workflow:
+  ci:
     jobs:
-      - say-hello
+      - set_version_number
+      - compile_app:
+          name: compile_dev
+          <<: *develop_branch
+          <<: *context
+          rc_build: false
+          requires:
+            - set_version_number
+      - cy-e2e-chrome-desktop
